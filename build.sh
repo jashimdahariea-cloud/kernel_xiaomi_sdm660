@@ -66,7 +66,7 @@ if ! [ -d "$TC_DIR" ]; then
     git clone --depth=1 "https://gitlab.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r596125" "$TC_DIR" || exit 1
 fi
 
-export KBUILD_COMPILER_STRING="$("$TC_DIR/bin/clang" --version | head -n 1)"
+export KBUILD_COMPILER_STRING="$($TC_DIR/bin/clang --version | head -n 1)"
 
 MAKE_ARGS=(
     O=out
@@ -107,6 +107,44 @@ make -j"$(nproc --all)" "${MAKE_ARGS[@]}" Image.gz-dtb || exit 1
 if ! [ -f "$KERNEL_IMG" ]; then
     exit 1
 fi
+
+echo "[*] Validating MT76 module config..."
+for cfg in CONFIG_MT76_CORE CONFIG_MT76_USB CONFIG_MT76x2_COMMON CONFIG_MT76x2U; do
+    if ! grep -Eq "^${cfg}=m$" out/.config; then
+        echo "ERROR: required kernel config ${cfg}=m is missing from out/.config"
+        exit 1
+    fi
+done
+
+echo "[*] Building modules for MT76 verification..."
+make -j"$(nproc --all)" "${MAKE_ARGS[@]}" modules || exit 1
+
+MODULE_EXPECTED=(
+    "drivers/net/wireless/mediatek/mt76/mt76.ko"
+    "drivers/net/wireless/mediatek/mt76/mt76-usb.ko"
+    "drivers/net/wireless/mediatek/mt76/mt76x2-common.ko"
+    "drivers/net/wireless/mediatek/mt76/mt76x2u.ko"
+)
+
+LOG_DIR="$OUT_DIR/mt76-artifacts"
+mkdir -p "$LOG_DIR"
+MOD_LOG="$LOG_DIR/mt76-module-check.log"
+: > "$MOD_LOG"
+
+for rel_path in "${MODULE_EXPECTED[@]}"; do
+    found="$(find "$OUT_DIR" -type f -path "*${rel_path}" | head -n 1)"
+    if [ -z "$found" ]; then
+        echo "ERROR: required module missing: $rel_path" | tee -a "$MOD_LOG"
+        exit 1
+    fi
+    dest="$LOG_DIR/${rel_path}"
+    mkdir -p "$(dirname "$dest")"
+    cp -f "$found" "$dest"
+    echo "== $found ==" | tee -a "$MOD_LOG"
+    modinfo -F vermagic "$found" | tee -a "$MOD_LOG"
+    modinfo -F depends "$found" | tee -a "$MOD_LOG" || true
+    echo | tee -a "$MOD_LOG"
+done
 
 rm -rf AnyKernel3
 git clone -q --depth=1 -b "$AK3_BRANCH" "$AK3_REPO" AnyKernel3 || exit 1
